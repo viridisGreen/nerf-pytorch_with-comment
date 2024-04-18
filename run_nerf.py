@@ -88,6 +88,7 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
       ndc: bool. If True, represent ray origin, direction in NDC coordinates.
       near: float or array of shape [batch_size]. Nearest distance for a ray.
       far: float or array of shape [batch_size]. Farthest distance for a ray.
+      #* 决定观察方向是否作为网络输入的一部分
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
       c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for 
        camera while using other c2w argument for viewing directions.
@@ -689,7 +690,9 @@ def train():
         print('done, concats')
         rays_rgb = np.concatenate([rays, images[:,None]], 1) # [N, ro+rd+rgb, H, W, 3]
         rays_rgb = np.transpose(rays_rgb, [0,2,3,1,4]) # [N, H, W, ro+rd+rgb, 3]
-        rays_rgb = np.stack([rays_rgb[i] for i in i_train], 0) # train images only
+        #* 把训练用数据筛出来，根据i_split，这里是i_train
+        rays_rgb = np.stack([rays_rgb[i] for i in i_train], 0) # train images only, [N-1, H, W, ro+rd+rgb, 3]
+        #* 为什么是N-1？因为测试集只选取了一张图片; 相当于有(N-1)*H*W条rays以及他们的rgb值
         rays_rgb = np.reshape(rays_rgb, [-1,3,3]) # [(N-1)*H*W, ro+rd+rgb, 3]
         rays_rgb = rays_rgb.astype(np.float32)
         print('shuffle rays')
@@ -699,6 +702,7 @@ def train():
         i_batch = 0
 
     # Move training data to GPU
+    #? 注意只有use batching的时候images和rays rgb才回被移动到gpu上
     if use_batching:
         images = torch.Tensor(images).to(device)
     poses = torch.Tensor(poses).to(device)
@@ -716,20 +720,22 @@ def train():
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     
     start = start + 1
-    for i in trange(start, N_iters):
+    for i in trange(start, N_iters): #* trange = tqdm + range
         time0 = time.time()
 
         # Sample random ray batch
         if use_batching:
             # Random over all images
+            #* i_batch 初始化为0
+            #* 2+1 = (ro+rd) + rgb
             batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
-            batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2], batch[2]
+            batch = torch.transpose(batch, 0, 1) #* 把ro+rd+rgb变换到第一维，方便后续取出rgb作为target
+            batch_rays, target_s = batch[:2], batch[2] #* 取出rgb作为target; 形状：[ro+rd, B, 3*?]  [rgb, B, 3*?]
 
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
                 print("Shuffle data after an epoch!")
-                rand_idx = torch.randperm(rays_rgb.shape[0])
+                rand_idx = torch.randperm(rays_rgb.shape[0]) #* 生成一个随机排列的索引数组，从0到参数-1
                 rays_rgb = rays_rgb[rand_idx]
                 i_batch = 0
 
@@ -807,6 +813,7 @@ def train():
             }, path)
             print('Saved checkpoints at', path)
 
+        #* disp全用在这个if里
         if i%args.i_video==0 and i > 0:
             # Turn on testing mode
             with torch.no_grad():
@@ -835,6 +842,7 @@ def train():
     
         if i%args.i_print==0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+        #* acc全用在这一大段注释里 (相当于没用)
         """
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
             print('iter time {:.05f}'.format(dt))
