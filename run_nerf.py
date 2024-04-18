@@ -67,7 +67,7 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
                 all_ret[k] = []
             all_ret[k].append(ret[k])
 
-    all_ret = {k : torch.cat(all_ret[k], 0) for k in all_ret}
+    all_ret = {k : torch.cat(all_ret[k], 0) for k in all_ret} #* 将每个结果列表沿着第一个维度（即批次维度）合并
     return all_ret
 
 
@@ -90,6 +90,7 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
       far: float or array of shape [batch_size]. Farthest distance for a ray.
       #* 决定观察方向是否作为网络输入的一部分
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
+      #* 如果提供，使用此变换矩阵为相机位置，而用 c2w 来处理观察方向
       c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for 
        camera while using other c2w argument for viewing directions.
     Returns:
@@ -103,7 +104,7 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
         rays_o, rays_d = get_rays(H, W, K, c2w)
     else:
         # use provided ray batch
-        rays_o, rays_d = rays
+        rays_o, rays_d = rays #* [1, batchsize, 3]
 
     if use_viewdirs:
         # provide ray directions as input
@@ -111,8 +112,8 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
         if c2w_staticcam is not None:
             # special case to visualize effect of viewdirs
             rays_o, rays_d = get_rays(H, W, K, c2w_staticcam)
-        viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
-        viewdirs = torch.reshape(viewdirs, [-1,3]).float()
+        viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True) #* 标准化
+        viewdirs = torch.reshape(viewdirs, [-1,3]).float() #* [1, batchsize, 3] -> [batchsize, 3]
 
     sh = rays_d.shape # [..., 3]
     if ndc:
@@ -120,13 +121,14 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
         rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
 
     # Create ray batch
-    rays_o = torch.reshape(rays_o, [-1,3]).float()
-    rays_d = torch.reshape(rays_d, [-1,3]).float()
+    rays_o = torch.reshape(rays_o, [-1,3]).float() #* [1, batchsize, 3] -> [batchsize, 3]
+    rays_d = torch.reshape(rays_d, [-1,3]).float() #* [1, batchsize, 3] -> [batchsize, 3]
 
-    near, far = near * torch.ones_like(rays_d[...,:1]), far * torch.ones_like(rays_d[...,:1])
-    rays = torch.cat([rays_o, rays_d, near, far], -1)
+    #* 取出第一维度主要是为了获取形状, [batchsize, 1]
+    near, far = near * torch.ones_like(rays_d[...,:1]), far * torch.ones_like(rays_d[...,:1]) 
+    rays = torch.cat([rays_o, rays_d, near, far], -1) #* [batchsize, 3+3+1+1]
     if use_viewdirs:
-        rays = torch.cat([rays, viewdirs], -1)
+        rays = torch.cat([rays, viewdirs], -1) #* [batchsize, 3+3+1+1 + 3]
 
     # Render and reshape
     all_ret = batchify_rays(rays, chunk, **kwargs)
@@ -267,6 +269,7 @@ def create_nerf(args):
     return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
 
 
+#* 只在render_rays里被调用
 def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
     """Transforms model's predictions to semantically meaningful values.
     Args:
@@ -313,7 +316,8 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     return rgb_map, disp_map, acc_map, weights, depth_map
 
 
-def render_rays(ray_batch,
+#* 只在batchify_rays里被调用
+def render_rays(ray_batch, 
                 network_fn,
                 network_query_fn,
                 N_samples,
