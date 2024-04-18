@@ -61,14 +61,14 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i+chunk], **kwargs)
+        ret = render_rays(rays_flat[i:i+chunk], **kwargs) #* render_rays的返回值是一个字典
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
             all_ret[k].append(ret[k])
 
     all_ret = {k : torch.cat(all_ret[k], 0) for k in all_ret} #* 将每个结果列表沿着第一个维度（即批次维度）合并
-    return all_ret
+    return all_ret #* 返回值是字典
 
 
 def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
@@ -131,14 +131,15 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
         rays = torch.cat([rays, viewdirs], -1) #* [batchsize, 3+3+1+1 + 3]
 
     # Render and reshape
-    all_ret = batchify_rays(rays, chunk, **kwargs)
+    all_ret = batchify_rays(rays, chunk, **kwargs) #* batchify_rays的返回值是字典
+    #todo 根据原始射线数据的形状对返回值进行重塑
     for k in all_ret:
-        k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
-        all_ret[k] = torch.reshape(all_ret[k], k_sh)
+        k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:]) #* [1, batchsize] + ...
+        all_ret[k] = torch.reshape(all_ret[k], k_sh) #* 形状全部重塑为[1, batchsize, ...]
 
-    k_extract = ['rgb_map', 'disp_map', 'acc_map']
+    k_extract = ['rgb_map', 'disp_map', 'acc_map'] #* 想单独返回的键名
     ret_list = [all_ret[k] for k in k_extract]
-    ret_dict = {k : all_ret[k] for k in all_ret if k not in k_extract}
+    ret_dict = {k : all_ret[k] for k in all_ret if k not in k_extract} #* 除了单独返回的，其他的返回值
     return ret_list + [ret_dict]
 
 
@@ -308,14 +309,17 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     alpha = raw2alpha(raw[...,3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
+    #* 权重，不透明度的另一种体现
+    #* torch.cumprod: 计算累积乘积，即每个点的权重等于该点透明度的补集与之前所有点的透明度的补集的乘积，
+    #*                结果表示到达当前点之前，光线没有被阻挡的概率
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
-    rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
+    rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3], 使用权重加权把num_samples along ray 积分积掉
 
-    depth_map = torch.sum(weights * z_vals, -1)
-    disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
-    acc_map = torch.sum(weights, -1)
+    depth_map = torch.sum(weights * z_vals, -1) #* 使用权重计算每条射线的加权平均深度
+    disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1)) #* 视差图，深度的倒数
+    acc_map = torch.sum(weights, -1) #* 所有采样点的权重和，表示整条射线的总不透明度
 
-    if white_bkgd:
+    if white_bkgd: #* 1-acc_map计算射线未被吸收的光量，并将其作为背景光加到 rgb_map 上，实现射线穿透效果的模拟
         rgb_map = rgb_map + (1.-acc_map[...,None])
 
     return rgb_map, disp_map, acc_map, weights, depth_map
@@ -408,15 +412,17 @@ def render_rays(ray_batch,
     raw = network_query_fn(pts, viewdirs, network_fn)
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
+    #todo 计算细网络的输出
     if N_importance > 0:
 
-        rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
+        rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map #* 存储粗网络的一些输出结果
 
-        z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
+        z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1]) #* 计算每对相邻采样点之间的中点，就是前面的mids
+        #todo 和粗网络构造采样点的方式不同，根据密度进行采样
         z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], N_importance, det=(perturb==0.), pytest=pytest)
-        z_samples = z_samples.detach()
+        z_samples = z_samples.detach() #* 从计算图中分离张量，不会进行梯度追踪，减少内存使用
 
-        z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
+        z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1) #* 将粗采样和细采样合并，并进行升序排序，64+128?
         pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
@@ -434,11 +440,12 @@ def render_rays(ray_batch,
         ret['acc0'] = acc_map_0
         ret['z_std'] = torch.std(z_samples, dim=-1, unbiased=False)  # [N_rays]
 
+    #todo 如果启用了调试模式 (DEBUG)，则检查返回的任何数据是否包含非法值（如 NaN 或无穷大）
     for k in ret:
         if (torch.isnan(ret[k]).any() or torch.isinf(ret[k]).any()) and DEBUG:
             print(f"! [Numerical Error] {k} contains nan or inf.")
 
-    return ret
+    return ret #* 返回一个字典
 
 
 def config_parser():
@@ -786,17 +793,19 @@ def train():
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
         #####  Core optimization loop  #####
+        #* disp和acc都没怎么用上
         rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
                                                 verbose=i < 10, retraw=True,
                                                 **render_kwargs_train)
 
         optimizer.zero_grad()
         img_loss = img2mse(rgb, target_s)
-        trans = extras['raw'][...,-1]
+        trans = extras['raw'][...,-1] #* 唯一的另外一次出现在长注释区域，先不管了
         loss = img_loss
         psnr = mse2psnr(img_loss)
 
-        if 'rgb0' in extras:
+        #todo 如果有细网络的话，loss再加上粗网络的值
+        if 'rgb0' in extras: 
             img_loss0 = img2mse(extras['rgb0'], target_s)
             loss = loss + img_loss0
             psnr0 = mse2psnr(img_loss0)
@@ -806,9 +815,10 @@ def train():
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
+        #todo 调整学习率，采用指数衰减，每个epoch都会调整一次
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
-        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
+        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps)) #* 计算新学习率
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
         ################################
@@ -818,6 +828,7 @@ def train():
         #####           end            #####
 
         # Rest is logging
+        #todo 在训练过程中定期保存模型的检查点（checkpoint）
         if i%args.i_weights==0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
             torch.save({
@@ -828,7 +839,7 @@ def train():
             }, path)
             print('Saved checkpoints at', path)
 
-        #* disp全用在这个if里
+        #todo 定期生成和保存训练过程中的可视化视频，通常用于监控模型性能和观察渲染结果的进展
         if i%args.i_video==0 and i > 0:
             # Turn on testing mode
             with torch.no_grad():
@@ -845,6 +856,7 @@ def train():
             #     render_kwargs_test['c2w_staticcam'] = None
             #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
 
+        #todo 在训练过程中定期执行测试集的渲染，并将渲染结果保存到磁盘
         if i%args.i_testset==0 and i > 0:
             testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
@@ -857,7 +869,7 @@ def train():
     
         if i%args.i_print==0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
-        #* acc全用在这一大段注释里 (相当于没用)
+        #* acc全用在这一大段注释里，以及trans的唯一一次使用，还有disp
         """
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
             print('iter time {:.05f}'.format(dt))
