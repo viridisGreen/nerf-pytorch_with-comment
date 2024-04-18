@@ -283,15 +283,20 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
     """
+    #* 论文里的渲染公式（不然就是渲染公式旁边的那个公式
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
 
-    dists = z_vals[...,1:] - z_vals[...,:-1]
+    #todo 计算每个采样间隔的距离
+    dists = z_vals[...,1:] - z_vals[...,:-1] #* 首先计算相邻采样点之间的距离
+    #* 在最后一个采样点，添加一个非常大的值（1e10），这样处理是为了确保最后一个采样区间封闭
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
-
-    dists = dists * torch.norm(rays_d[...,None,:], dim=-1)
+    
+    #* norm(rays_d[...,None,:], dim=-1) 的形状是 [num_rays, 1]
+    dists = dists * torch.norm(rays_d[...,None,:], dim=-1) #* 距离与ray_d的长度进行缩放，确保距离在三维空间中是正确的
 
     rgb = torch.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
     noise = 0.
+    #todo 增加噪声并计算alpha的值
     if raw_noise_std > 0.:
         noise = torch.randn(raw[...,3].shape) * raw_noise_std
 
@@ -316,7 +321,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     return rgb_map, disp_map, acc_map, weights, depth_map
 
 
-#* 只在batchify_rays里被调用
+#* 只在batchify_rays里被调用, nerf模型的核心渲染函数
 def render_rays(ray_batch, 
                 network_fn,
                 network_query_fn,
@@ -340,6 +345,7 @@ def render_rays(ray_batch,
       network_query_fn: function used for passing queries to network_fn.
       N_samples: int. Number of different times to sample along each ray.
       retraw: bool. If True, include model's raw, unprocessed predictions.
+      #? 简单来说就是, 是均匀采样还是xx
       lindisp: bool. If True, sample linearly in inverse depth rather than in depth.
       perturb: float, 0 or 1. If non-zero, each ray is sampled at stratified
         random points in time.
@@ -360,40 +366,45 @@ def render_rays(ray_batch,
       z_std: [num_rays]. Standard deviation of distances along ray for each
         sample.
     """
-    N_rays = ray_batch.shape[0]
+    N_rays = ray_batch.shape[0] #* rays的数量
+    #* ray_batch-[N_rays, 8 or 11], rays_o(3), rays_d(3), near(1), far(1), (viewdir(3))
     rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
     viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
-    bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
+    bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2]) #* [N_rays, 1, 2]
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
 
-    t_vals = torch.linspace(0., 1., steps=N_samples)
-    if not lindisp:
-        z_vals = near * (1.-t_vals) + far * (t_vals)
-    else:
-        z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
+    t_vals = torch.linspace(0., 1., steps=N_samples) #* 生成一个从 0 到 1 均匀分布的数值数组，包含 N_samples 个元素
+    if not lindisp: #* 采样点会均匀分布
+        z_vals = near * (1.-t_vals) + far * (t_vals) #* 计算就先不管了  [N_samples, ]
+    else: #* 会使采样点更集中在near端
+        z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals)) #* 计算就先不管了  [N_samples, ]
 
-    z_vals = z_vals.expand([N_rays, N_samples])
+    z_vals = z_vals.expand([N_rays, N_samples]) #* [N_rays, N_samples]
 
+    #todo 在z_vals中引入随机性
     if perturb > 0.:
+        #* 建议去看nerf速通(下)，讲的很好
         # get intervals between samples
-        mids = .5 * (z_vals[...,1:] + z_vals[...,:-1])
-        upper = torch.cat([mids, z_vals[...,-1:]], -1)
-        lower = torch.cat([z_vals[...,:1], mids], -1)
+        mids = .5 * (z_vals[...,1:] + z_vals[...,:-1]) #* 计算每对相邻采样点之间的中点
+        upper = torch.cat([mids, z_vals[...,-1:]], -1) #* 中点s + 最后一个采样点
+        lower = torch.cat([z_vals[...,:1], mids], -1) #* 第一个采样点 + 中点s
         # stratified samples in those intervals
+        #* 生成与z_vals形状相同的随机数张量t_rand，每个元素的值在0~1之间。这些随机数用于在每个定义的间隔内随机选择采样深度
         t_rand = torch.rand(z_vals.shape)
 
         # Pytest, overwrite u with numpy's fixed random numbers
-        if pytest:
+        if pytest: #* 测试模式下 (pytest=True)，使用固定的随机种子生成随机数，确保结果的可重复性
             np.random.seed(0)
             t_rand = np.random.rand(*list(z_vals.shape))
             t_rand = torch.Tensor(t_rand)
 
-        z_vals = lower + (upper - lower) * t_rand
+        z_vals = lower + (upper - lower) * t_rand #* 根据t_rand更新采样点，使其随机化
 
+    #* 采样点 = 起点 + 方向 * 采样模板（类似梳函数
     pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples, 3]
 
 
-#     raw = run_network(pts)
+    # raw = run_network(pts)
     raw = network_query_fn(pts, viewdirs, network_fn)
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 

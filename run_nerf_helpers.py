@@ -102,7 +102,7 @@ class NeRF(nn.Module):
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
 
-        if self.use_viewdirs:
+        if self.use_viewdirs: #* 如果使用观察方向作为输入，就分别输出rgb和α
             alpha = self.alpha_linear(h)
             feature = self.feature_linear(h)
             h = torch.cat([feature, input_views], -1)
@@ -113,7 +113,7 @@ class NeRF(nn.Module):
 
             rgb = self.rgb_linear(h)
             outputs = torch.cat([rgb, alpha], -1)
-        else:
+        else: #* 否则就一次输出
             outputs = self.output_linear(h)
 
         return outputs    
