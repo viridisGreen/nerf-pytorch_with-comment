@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm, trange
+import ipdb
 
 import matplotlib.pyplot as plt
 
@@ -30,23 +31,26 @@ def batchify(fn, chunk):
     if chunk is None:
         return fn
     def ret(inputs):
+        #* 在第0个维度上，分chunk把inputs输入网络fn()，然后再把返回值连接
         return torch.cat([fn(inputs[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
     return ret
 
 
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
-    """Prepares inputs and applies network 'fn'.
+    """Prepares inputs and applies network 'fn'. 
+       #? fn就是network funtion, 暂时不知道具体是什么
     """
-    inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
-    embedded = embed_fn(inputs_flat)
+    inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]]) #* 仅保留最后一维，其余全部展平
+    embedded = embed_fn(inputs_flat) #* 从使用的embed函数来看，这个inputs应该是rgb
 
     if viewdirs is not None:
         input_dirs = viewdirs[:,None].expand(inputs.shape)
-        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        embedded_dirs = embeddirs_fn(input_dirs_flat)
-        embedded = torch.cat([embedded, embedded_dirs], -1)
+        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]]) #* 仅保留最后一维，其余全部展平
+        embedded_dirs = embeddirs_fn(input_dirs_flat) #* 计算方向的embedding
+        embedded = torch.cat([embedded, embedded_dirs], -1) #* 按照rgb dir的顺序，在最后一维进行连接：N * (rgb，dir)
 
-    outputs_flat = batchify(fn, netchunk)(embedded)
+    #* bachify看看是否分chunk运行：如果分就返回分批运行的函数，不分就直接返回传入的fn
+    outputs_flat = batchify(fn, netchunk)(embedded) #* bachify的返回值是一个函数，调用了返回的函数
     outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
     return outputs
 
@@ -178,21 +182,21 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    embed_fn, input_ch = get_embedder(args.multires, args.i_embed) #* 返回获得embedding的函数，以及embedding的维度
 
     input_ch_views = 0
     embeddirs_fn = None
-    if args.use_viewdirs:
+    if args.use_viewdirs: #* 是否对方向也进行embedding，返回方向embedding的函数和维度
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    output_ch = 5 if args.N_importance > 0 else 4
-    skips = [4]
+    output_ch = 5 if args.N_importance > 0 else 4 #? 暂时不知道是干什么的，采用细网络就输出五个参数？
+    skips = [4] #* 用于residual connection
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
     grad_vars = list(model.parameters())
 
     model_fine = None
-    if args.N_importance > 0:
+    if args.N_importance > 0: #* 是否使用细网络
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
@@ -874,5 +878,5 @@ def train():
 
 if __name__=='__main__':
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
-
+    # ipdb.set_trace()
     train()
