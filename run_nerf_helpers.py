@@ -162,14 +162,25 @@ def get_rays(H, W, K, c2w):
     return rays_o, rays_d
 
 
-def get_rays_np(H, W, K, c2w):
+def get_rays_np(H, W, K, c2w): #* K是相机内参
+    '''用于计算从相机坐标系到世界坐标系的射线方向和起点
+    '''
+    #todo 生成像素索引网格
+    #* np.arrange: 生成等间距的值构成的数组
     i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')
+    #todo 计算射线方向
+    #? 分别计算 x 和 y 方向的归一化坐标，考虑到了焦距和主点偏移
+    #? -np.ones_like(i) 添加了 z 方向的坐标，这里固定为 -1 表示所有射线方向都指向 z 负方向（相机前方）
     dirs = np.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -np.ones_like(i)], -1)
+    #todo 将射线方向旋转到世界坐标系
     # Rotate ray directions from camera frame to the world frame
     rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    #todo 计算射线的起点
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
     rays_o = np.broadcast_to(c2w[:3,-1], np.shape(rays_d))
-    return rays_o, rays_d
+    #* rays_o: 每个射线的起点都相同，即相机的世界坐标位置
+    #* rays_d: 这些方向已从相机坐标系转换到世界坐标系
+    return rays_o, rays_d #* 返回射线的起点和方向
 
 
 def ndc_rays(H, W, focal, near, rays_o, rays_d):

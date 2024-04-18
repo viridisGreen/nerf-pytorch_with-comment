@@ -39,6 +39,7 @@ def batchify(fn, chunk):
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'. 
        #? fn就是network funtion, 暂时不知道具体是什么
+       #* workflow: 展平 -> 计算 -> 重塑(逆展平)
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]]) #* 仅保留最后一维，其余全部展平
     embedded = embed_fn(inputs_flat) #* 从使用的embed函数来看，这个inputs应该是rgb
@@ -51,7 +52,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
 
     #* bachify看看是否分chunk运行：如果分就返回分批运行的函数，不分就直接返回传入的fn
     outputs_flat = batchify(fn, netchunk)(embedded) #* bachify的返回值是一个函数，调用了返回的函数
-    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
+    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]]) #* 将形状重塑为进来的形状
     return outputs
 
 
@@ -202,6 +203,8 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
+    #* 在这个函数里面执行了网络的前向传播
+    #? 网络具体是什么暂时未知
     network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
                                                                 embed_fn=embed_fn,
                                                                 embeddirs_fn=embeddirs_fn,
@@ -239,15 +242,15 @@ def create_nerf(args):
     ##########################
 
     render_kwargs_train = {
-        'network_query_fn' : network_query_fn,
-        'perturb' : args.perturb,
-        'N_importance' : args.N_importance,
-        'network_fine' : model_fine,
-        'N_samples' : args.N_samples,
-        'network_fn' : model,
-        'use_viewdirs' : args.use_viewdirs,
-        'white_bkgd' : args.white_bkgd,
-        'raw_noise_std' : args.raw_noise_std,
+        'network_query_fn' : network_query_fn, #* 执行力网络的前向传播
+        'perturb' : args.perturb, #* 用于控制渲染过程中的随机扰动，应该是布尔值
+        'N_importance' : args.N_importance, #* 细网络采样点数
+        'network_fine' : model_fine, #* 细网络
+        'N_samples' : args.N_samples, #? 暂时不知道是什么，粗网络吗？
+        'network_fn' : model, #* 粗网络
+        'use_viewdirs' : args.use_viewdirs, #* 方向是否使用embedding
+        'white_bkgd' : args.white_bkgd, #* bool值，是否使用white bkgd
+        'raw_noise_std' : args.raw_noise_std, #* 应该是和perturb对应的值
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -256,9 +259,9 @@ def create_nerf(args):
         render_kwargs_train['ndc'] = False
         render_kwargs_train['lindisp'] = args.lindisp
 
-    render_kwargs_test = {k : render_kwargs_train[k] for k in render_kwargs_train}
-    render_kwargs_test['perturb'] = False
-    render_kwargs_test['raw_noise_std'] = 0.
+    render_kwargs_test = {k : render_kwargs_train[k] for k in render_kwargs_train} #* test和train一样，先duplicate一份
+    render_kwargs_test['perturb'] = False #* 修改两个参数 1/2
+    render_kwargs_test['raw_noise_std'] = 0. #* 修改两个参数 2/2
 
     return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
 
@@ -644,6 +647,7 @@ def train():
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
 
+    #* 在train和test参数中加入bound：{near和far}
     bds_dict = {
         'near' : near,
         'far' : far,
@@ -676,7 +680,7 @@ def train():
             return
 
     # Prepare raybatch tensor if batching random rays
-    N_rand = args.N_rand
+    N_rand = args.N_rand #* 一批采样几条光线
     use_batching = not args.no_batching
     if use_batching:
         # For random ray batching
