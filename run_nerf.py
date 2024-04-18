@@ -187,10 +187,10 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed) #* 返回获得embedding的函数，以及embedding的维度
+    embed_fn, input_ch = get_embedder(args.multires, args.i_embed) #* 返回获得rgb embedding的函数，以及embedding的维度
 
-    input_ch_views = 0
-    embeddirs_fn = None
+    input_ch_views = 0 #* 方向embed后的维度
+    embeddirs_fn = None #* 获取方向embedding的函数
     if args.use_viewdirs: #* 是否对方向也进行embedding，返回方向embedding的函数和维度
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
     output_ch = 5 if args.N_importance > 0 else 4 #? 暂时不知道是干什么的，采用细网络就输出五个参数？
@@ -202,7 +202,7 @@ def create_nerf(args):
 
     model_fine = None
     if args.N_importance > 0: #* 是否使用细网络
-        model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+        model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine, #* depth和width不一样
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
@@ -218,8 +218,8 @@ def create_nerf(args):
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
 
     start = 0
-    basedir = args.basedir
-    expname = args.expname
+    basedir = args.basedir #* 在load checkpoints里面使用
+    expname = args.expname #* 在load checkpoints里面使用
 
     ##########################
 

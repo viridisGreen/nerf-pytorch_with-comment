@@ -76,10 +76,12 @@ class NeRF(nn.Module):
         self.skips = skips
         self.use_viewdirs = use_viewdirs
         
+        #todo 网络的主干部分，rgb和α都要经过这一部分
         self.pts_linears = nn.ModuleList(
             [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
         
         ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
+        #todo 相机方向作为输入的网络部分，到输出颜色的前一层，共一层
         self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
 
         ### Implementation according to the paper
@@ -87,21 +89,23 @@ class NeRF(nn.Module):
         #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
         
         if use_viewdirs:
-            self.feature_linear = nn.Linear(W, W)
-            self.alpha_linear = nn.Linear(W, 1)
-            self.rgb_linear = nn.Linear(W//2, 3)
+            self.feature_linear = nn.Linear(W, W) #* 从主干部分 到 方向输入
+            self.alpha_linear = nn.Linear(W, 1) #* 从主干部分的输出 到 α
+            self.rgb_linear = nn.Linear(W//2, 3) #* 从方向输入部分的输出 到 rgb
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
     def forward(self, x):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
+        #todo 主干部分的前向传播
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
 
+        #todo 根据是否使用观察方向作为输入，决定输出方式
         if self.use_viewdirs: #* 如果使用观察方向作为输入，就分别输出rgb和α
             alpha = self.alpha_linear(h)
             feature = self.feature_linear(h)
@@ -112,8 +116,8 @@ class NeRF(nn.Module):
                 h = F.relu(h)
 
             rgb = self.rgb_linear(h)
-            outputs = torch.cat([rgb, alpha], -1)
-        else: #* 否则就一次输出
+            outputs = torch.cat([rgb, alpha], -1) #* 将分别输出的rgb和α连接后再返回
+        else: #* 否则就一次直接输出rgba
             outputs = self.output_linear(h)
 
         return outputs    
